@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: liftonway-backend
+  jackson:
+    # Dates go out as ISO-8601 with their offset, e.g. 2026-10-20T08:00:00+05:00.
+    time-zone: Asia/Karachi
+  # The database comes from SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD when deployed;
+  # `bootRun` gets it from compose.yaml and the tests from Testcontainers.
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+springdoc:
+  swagger-ui:
+    path: /docs
+
+liftonway:
+  # The zone ride dates are interpreted in ("rides on 20 October" means Pakistan's 20 October).
+  zone: Asia/Karachi
+  jwt:
+    # Required outside dev and test: a random value of at least 32 bytes, from a secret store. Never commit one.
+    secret: ${LIFTONWAY_JWT_SECRET:}
+    ttl: 7d
+  otp:
+    length: 4
+    ttl: 5m
+    max-attempts: 5
+    resend-after: 30s
+    max-per-hour: 5
+  cancellation-cutoff: 4h

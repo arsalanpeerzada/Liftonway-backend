@@ -1,0 +1,4 @@
+liftonway:
+  otp:
+    # Test value only: no SMS is sent and every code is this.
+    dev-code: "1234"

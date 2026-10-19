@@ -1,0 +1,10 @@
+# Local development only (`./gradlew bootRun` turns this profile on).
+liftonway:
+  otp:
+    # No SMS provider locally: every code is this fixed test value. The prod profile has no such setting.
+    dev-code: "1234"
+  demo-data: true
+
+logging:
+  level:
+    dev.liftonway: DEBUG

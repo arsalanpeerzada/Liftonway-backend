@@ -1,0 +1,22 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{kt,kts}]
+# Android Studio's style, with room for Compose's long modifier chains.
+ktlint_code_style = android_studio
+max_line_length = 160
+# Composable functions are PascalCase by convention.
+ktlint_function_naming_ignore_when_annotated_with = Composable
+# House style: trailing commas everywhere, compact `when` branches.
+ij_kotlin_allow_trailing_comma = true
+ij_kotlin_allow_trailing_comma_on_call_site = true
+ktlint_standard_blank-line-between-when-conditions = disabled

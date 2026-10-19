@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+build/
+out/
+.idea/
+*.iml
+.DS_Store
+# Secrets and local overrides never go in Git
+.env
+*.env
+application-local.yml
+*.jks
+*.p12
