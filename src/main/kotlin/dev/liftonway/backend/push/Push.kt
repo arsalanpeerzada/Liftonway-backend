@@ -58,8 +58,11 @@ data class DeviceBody(@field:NotBlank @field:Size(max = 4096) val token: String)
 
 @Repository
 class Devices(private val jdbc: JdbcClient, private val clock: Clock) {
-    /** Registers [token] for [user]. A token that belonged to someone else (shared phone) moves over. */
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    /** Registers [token] for [user]. A token that belonged to someone else (shared phone) moves over. Tokens are never logged. */
     fun register(user: UUID, token: String) {
+        log.info("Registered a phone for push for user {}", user)
         jdbc.sql(
             """insert into device_tokens (token, user_id, updated_at) values (:token, :user, :now)
                on conflict (token) do update set user_id = excluded.user_id, updated_at = excluded.updated_at""",
