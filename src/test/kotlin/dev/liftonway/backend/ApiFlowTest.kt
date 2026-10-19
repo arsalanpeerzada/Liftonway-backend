@@ -16,7 +16,9 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.web.client.RestClient
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import javax.sql.DataSource
+import dev.liftonway.backend.rides.RideService
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -59,6 +61,8 @@ class ApiFlowTest {
     @LocalServerPort var port = 0
 
     @Autowired lateinit var clock: MutableClock
+
+    @Autowired lateinit var rides: RideService
 
     private val http by lazy { RestClient.builder().baseUrl("http://localhost:$port/api/v1").build() }
 
@@ -147,6 +151,85 @@ class ApiFlowTest {
         val cancelled = post("/bookings/$bookingId/cancel", token = passenger)
         assertEquals("CANCELLED", cancelled.json["status"])
         assertEquals("CANCELLED", cancelled.json["tripStatus"])
+    }
+
+    @Test
+    fun `drivers answer requests from notifications, and rides are cancelled or completed`() {
+        val driver = signUp("Lifecycle Driver", "3001120001")
+        val car = mapOf("name" to "Toyota Yaris", "model" to "2023", "plate" to "ABC 123", "colour" to "Grey", "airConditioning" to true, "heater" to true)
+        put("/me/vehicle", car, driver)
+        fun publish(departure: String) = post(
+            "/rides",
+            mapOf("from" to "blue", "to" to "airport", "departure" to departure, "seats" to 3, "pricePerSeat" to 600),
+            driver,
+        ).json["id"] as String
+
+        val rideId = publish("2026-10-20T08:00:00+05:00")
+        val asma = signUp("Asma Rider", "3001120002")
+        val omar = signUp("Omar Rider", "3001120003")
+        val asmaBooking = post("/rides/$rideId/bookings", mapOf("seats" to 1), asma).json["id"] as String
+        clock.now = clock.now.plusSeconds(60)
+        val omarBooking = post("/rides/$rideId/bookings", mapOf("seats" to 1), omar).json["id"] as String
+
+        // The driver sees both requests, newest first, ready to answer.
+        assertEquals(2, get("/me/notifications/unread", driver).json["count"])
+        val requests = get("/me/notifications", driver).list
+        assertEquals(listOf("RIDE_REQUEST", "RIDE_REQUEST"), requests.map { it["kind"] })
+        assertEquals("Omar Rider", (requests.first()["actor"] as Map<*, *>)["name"])
+        assertEquals("Blue Area, Jinnah Avenue", (requests.first()["ride"] as Map<*, *>)["from"])
+        assertEquals("Islamabad International Airport", (requests.first()["ride"] as Map<*, *>)["to"])
+        assertTrue(requests.all { it["actionable"] == true })
+
+        assertEquals("DECLINED", post("/bookings/$omarBooking/decline", token = driver).json["status"])
+        assertEquals("CONFIRMED", post("/bookings/$asmaBooking/accept", token = driver).json["status"])
+        val answered = get("/me/notifications", driver).list
+        assertTrue(answered.none { it["actionable"] == true })
+        assertEquals(setOf("DECLINED", "CONFIRMED"), answered.map { it["bookingStatus"] }.toSet())
+        assertEquals("REQUEST_DECLINED", get("/me/notifications", omar).list.single()["kind"])
+        assertEquals("REQUEST_ACCEPTED", get("/me/notifications", asma).list.single()["kind"])
+
+        post("/me/notifications/read", token = driver)
+        assertEquals(0, get("/me/notifications/unread", driver).json["count"])
+        val gone = answered.first()["id"]
+        assertEquals(404, call(HttpMethod.DELETE, "/me/notifications/$gone", token = asma).status)
+        assertEquals(204, call(HttpMethod.DELETE, "/me/notifications/$gone", token = driver).status)
+        assertEquals(1, get("/me/notifications", driver).list.size)
+
+        // With a confirmed passenger, the driver is held to the 4-hour rule too, and can't complete before leaving.
+        clock.now = Instant.parse("2026-10-20T00:00:00Z")
+        fun mine(id: String) = get("/me/rides", driver).list.first { (it["ride"] as Map<*, *>)["id"] == id }
+        assertEquals(false, mine(rideId)["canCancel"])
+        assertEquals("CANCEL_WINDOW_CLOSED", post("/rides/$rideId/cancel", token = driver).code)
+        assertEquals("NOT_DEPARTED", post("/rides/$rideId/complete", token = driver).code)
+        assertEquals(403, post("/rides/$rideId/complete", token = asma).status)
+
+        clock.now = Instant.parse("2026-10-20T04:00:00Z")
+        assertEquals(true, mine(rideId)["canComplete"])
+        assertEquals("COMPLETED", post("/rides/$rideId/complete", token = driver).json["tripStatus"])
+        assertEquals("RIDE_ENDED", post("/rides/$rideId/complete", token = driver).code)
+        assertEquals("COMPLETED", get("/me/bookings", asma).list.first()["tripStatus"])
+        assertEquals("RIDE_COMPLETED", get("/me/notifications", asma).list.first()["kind"])
+
+        // A ride nobody is confirmed on can be called off late; whoever asked hears about it.
+        clock.now = TestInfra.START
+        val second = publish("2026-10-21T08:00:00+05:00")
+        post("/rides/$second/bookings", mapOf("seats" to 2), omar)
+        clock.now = Instant.parse("2026-10-21T02:00:00Z")
+        assertEquals("CANCELLED", post("/rides/$second/cancel", token = driver).json["tripStatus"])
+        assertEquals("RIDE_CANCELLED", get("/me/notifications", omar).list.first()["kind"])
+        assertEquals("CANCELLED", get("/me/bookings", omar).list.first { (it["ride"] as Map<*, *>)["id"] == second }["tripStatus"])
+
+        // Rides the driver forgets are completed six hours after departure, and unanswered requests lapse.
+        clock.now = TestInfra.START
+        val third = publish("2026-10-22T08:00:00+05:00")
+        val waiting = post("/rides/$third/bookings", mapOf("seats" to 1), asma).json["id"] as String
+        clock.now = Instant.parse("2026-10-22T08:30:00Z")
+        rides.completeOverdue(Duration.ofHours(6))
+        assertEquals("UPCOMING", mine(third)["tripStatus"])
+        clock.now = Instant.parse("2026-10-22T09:30:00Z")
+        rides.completeOverdue(Duration.ofHours(6))
+        assertEquals("COMPLETED", mine(third)["tripStatus"])
+        assertEquals("DECLINED", get("/me/bookings", asma).list.first { it["id"] == waiting }["status"])
     }
 
     @Test

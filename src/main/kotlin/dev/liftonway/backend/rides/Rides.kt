@@ -1,10 +1,14 @@
 package dev.liftonway.backend.rides
 
+import dev.liftonway.backend.bookings.CancellationPolicy
 import dev.liftonway.backend.common.Conflict
+import dev.liftonway.backend.common.Forbidden
 import dev.liftonway.backend.common.Invalid
 import dev.liftonway.backend.common.LiftOnWayProperties
 import dev.liftonway.backend.common.NotFound
 import dev.liftonway.backend.common.userId
+import dev.liftonway.backend.notifications.NotificationKind
+import dev.liftonway.backend.notifications.Notifications
 import dev.liftonway.backend.places.Place
 import dev.liftonway.backend.places.PlaceRepository
 import dev.liftonway.backend.vehicles.VehicleRepository
@@ -13,6 +17,7 @@ import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
+import org.slf4j.LoggerFactory
 import org.springframework.format.annotation.DateTimeFormat
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.simple.JdbcClient
@@ -56,6 +61,12 @@ data class RideView(
 
 enum class TripStatus { UPCOMING, COMPLETED, CANCELLED }
 
+/** Stored lifecycle of a ride. A scheduled ride stays "upcoming" until the driver completes it or the job does. */
+enum class RideStatus { SCHEDULED, COMPLETED, CANCELLED }
+
+/** A ride as stored, with its lifecycle status. */
+data class RideRecord(val view: RideView, val status: RideStatus)
+
 data class PublishRide(
     @field:NotBlank val from: String,
     @field:NotBlank val to: String,
@@ -66,9 +77,16 @@ data class PublishRide(
     @field:Size(max = 200) val route: String = "",
 )
 
-data class Passenger(val bookingId: UUID, val name: String, val seats: Int, val status: String)
+data class Passenger(val bookingId: UUID, val passengerId: UUID, val name: String, val photoUrl: String?, val seats: Int, val status: String)
 
-data class PublishedRideView(val ride: RideView, val tripStatus: TripStatus, val passengers: List<Passenger>)
+/** A driver's own ride. [canCancel] and [canComplete] say which lifecycle actions the server would accept now. */
+data class PublishedRideView(
+    val ride: RideView,
+    val tripStatus: TripStatus,
+    val passengers: List<Passenger>,
+    val canCancel: Boolean,
+    val canComplete: Boolean,
+)
 
 /** Rides, their ordered points and how many seats are still free. Seats count as taken while pending or confirmed. */
 @Repository
@@ -80,9 +98,7 @@ class RideRepository(private val jdbc: JdbcClient, private val settings: LiftOnW
         from rides r join users u on u.id = r.driver_id
     """.trimIndent()
 
-    private data class Row(val view: RideView, val cancelled: Boolean)
-
-    private fun row(rs: ResultSet) = Row(
+    private fun row(rs: ResultSet) = RideRecord(
         RideView(
             id = rs.getObject("id", UUID::class.java),
             driver = Driver(
@@ -99,11 +115,11 @@ class RideRepository(private val jdbc: JdbcClient, private val settings: LiftOnW
             pricePerSeat = rs.getInt("price_per_seat"),
             route = rs.getString("route"),
         ),
-        rs.getBoolean("cancelled"),
+        RideStatus.valueOf(rs.getString("status")),
     )
 
     /** Fills in each ride's points with one query. */
-    private fun withPoints(rows: List<Row>): List<Pair<RideView, Boolean>> {
+    private fun withPoints(rows: List<RideRecord>): List<RideRecord> {
         if (rows.isEmpty()) return emptyList()
         val points = jdbc.sql(
             """select rp.ride_id, p.id, p.title, p.area from ride_points rp join places p on p.id = rp.place_id
@@ -113,10 +129,10 @@ class RideRepository(private val jdbc: JdbcClient, private val settings: LiftOnW
             .query { rs, _ -> rs.getObject("ride_id", UUID::class.java) to Place(rs.getString("id"), rs.getString("title"), rs.getString("area")) }
             .list()
             .groupBy({ it.first }, { it.second })
-        return rows.map { it.view.copy(points = points[it.view.id].orEmpty()) to it.cancelled }
+        return rows.map { it.copy(view = it.view.copy(points = points[it.view.id].orEmpty())) }
     }
 
-    fun find(id: UUID): Pair<RideView, Boolean>? =
+    fun find(id: UUID): RideRecord? =
         withPoints(jdbc.sql("$select where r.id = :id").param("id", id).query { rs, _ -> row(rs) }.list()).firstOrNull()
 
     /** Locks the ride row so concurrent seat requests are checked one at a time. */
@@ -134,7 +150,7 @@ class RideRepository(private val jdbc: JdbcClient, private val settings: LiftOnW
             """select * from ($select
                  join ride_points a on a.ride_id = r.id and a.place_id = :from
                  join ride_points b on b.ride_id = r.id and b.place_id = :to and b.position > a.position
-                 where not r.cancelled and r.driver_id <> :me
+                 where r.status = 'SCHEDULED' and r.driver_id <> :me
                    and r.departure >= :dayStart and r.departure < :dayEnd and r.departure >= :earliest) s
                where s.seats_left >= :seats
                order by s.departure limit :limit""",
@@ -143,10 +159,10 @@ class RideRepository(private val jdbc: JdbcClient, private val settings: LiftOnW
             .param("dayStart", Timestamp.from(dayStart)).param("dayEnd", Timestamp.from(date.plusDays(1).atStartOfDay(settings.zone).toInstant()))
             .param("earliest", Timestamp.from(maxOf(earliest, dayStart)))
             .query { rs, _ -> row(rs) }.list()
-        return withPoints(rows).map { it.first }
+        return withPoints(rows).map { it.view }
     }
 
-    fun byDriver(driver: UUID): List<Pair<RideView, Boolean>> =
+    fun byDriver(driver: UUID): List<RideRecord> =
         withPoints(jdbc.sql("$select where r.driver_id = :driver order by r.departure desc limit 100").param("driver", driver).query { rs, _ -> row(rs) }.list())
 
     fun create(id: UUID, driver: UUID, departure: Instant, points: List<String>, seats: Int, price: Int, route: String, vehicleName: String, now: Instant) {
@@ -163,13 +179,43 @@ class RideRepository(private val jdbc: JdbcClient, private val settings: LiftOnW
         }
     }
 
+    /** Who holds or has asked for a seat: pending and confirmed requests, oldest first. */
     fun passengers(rideId: UUID): List<Passenger> = jdbc.sql(
-        """select b.id, u.name, b.seats, b.status from bookings b join users u on u.id = b.passenger_id
+        """select b.id, b.passenger_id, u.name, u.photo_url, b.seats, b.status from bookings b join users u on u.id = b.passenger_id
            where b.ride_id = :id and b.status in ('PENDING', 'CONFIRMED') order by b.created_at""",
     )
         .param("id", rideId)
-        .query { rs, _ -> Passenger(rs.getObject("id", UUID::class.java), rs.getString("name"), rs.getInt("seats"), rs.getString("status")) }
+        .query { rs, _ ->
+            Passenger(
+                rs.getObject("id", UUID::class.java),
+                rs.getObject("passenger_id", UUID::class.java),
+                rs.getString("name"),
+                rs.getString("photo_url"),
+                rs.getInt("seats"),
+                rs.getString("status"),
+            )
+        }
         .list()
+
+    fun setStatus(id: UUID, status: RideStatus, now: Instant) {
+        jdbc.sql("update rides set status = :status, ended_at = :now where id = :id")
+            .param("status", status.name).param("now", Timestamp.from(now)).param("id", id).update()
+    }
+
+    /** Pending requests lapse when a ride ends; nobody answered them in time. */
+    fun lapsePendingRequests(id: UUID, now: Instant) {
+        jdbc.sql("update bookings set status = 'DECLINED', updated_at = :now where ride_id = :id and status = 'PENDING'")
+            .param("now", Timestamp.from(now)).param("id", id).update()
+    }
+
+    /**
+     * Scheduled rides that left before [departedBefore], locked for this transaction. Rows another instance
+     * is already handling are skipped, so running the job on several servers is safe.
+     */
+    fun lockDueForCompletion(departedBefore: Instant, limit: Int = 100): List<UUID> = jdbc.sql(
+        """select id from rides where status = 'SCHEDULED' and departure < :before
+           order by departure limit :limit for update skip locked""",
+    ).param("before", Timestamp.from(departedBefore)).param("limit", limit).query { rs, _ -> rs.getObject("id", UUID::class.java) }.list()
 }
 
 @Service
@@ -177,8 +223,11 @@ class RideService(
     private val rides: RideRepository,
     private val places: PlaceRepository,
     private val vehicles: VehicleRepository,
+    private val policy: CancellationPolicy,
+    private val notifications: Notifications,
     private val clock: Clock,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
     /** Searches start at least this far ahead, so nobody books a car that is already pulling away. */
     private val searchLead = Duration.ofMinutes(30)
 
@@ -208,14 +257,89 @@ class RideService(
         if (departure.isAfter(now.plus(Duration.ofDays(60)))) throw Invalid("DEPARTURE_TOO_FAR", "Rides can be published up to 60 days ahead.")
         val id = UUID.randomUUID()
         rides.create(id, driver, departure, points, body.seats, body.pricePerSeat, body.route.trim(), vehicle.name, now)
-        return rides.find(id)!!.first
+        return rides.find(id)!!.view
     }
 
-    fun tripStatus(ride: RideView, cancelled: Boolean): TripStatus = when {
-        cancelled -> TripStatus.CANCELLED
-        ride.departure.toInstant().isBefore(clock.instant()) -> TripStatus.COMPLETED
-        else -> TripStatus.UPCOMING
+    fun tripStatus(status: RideStatus): TripStatus = when (status) {
+        RideStatus.SCHEDULED -> TripStatus.UPCOMING
+        RideStatus.COMPLETED -> TripStatus.COMPLETED
+        RideStatus.CANCELLED -> TripStatus.CANCELLED
     }
+
+    fun published(record: RideRecord): PublishedRideView {
+        val passengers = rides.passengers(record.view.id)
+        val scheduled = record.status == RideStatus.SCHEDULED
+        return PublishedRideView(
+            record.view,
+            tripStatus(record.status),
+            passengers,
+            canCancel = scheduled && !departed(record.view) && cancelAllowed(record.view, passengers),
+            canComplete = scheduled && departed(record.view),
+        )
+    }
+
+    fun mine(driver: UUID): List<PublishedRideView> = rides.byDriver(driver).map(::published)
+
+    /**
+     * The driver calls a ride off. Allowed any time before departure while nobody is confirmed; once someone is,
+     * the same 4-hour rule passengers follow applies, so nobody loses their lift at the last minute.
+     */
+    @Transactional
+    fun cancel(rideId: UUID, driver: UUID): PublishedRideView {
+        val record = ownScheduled(rideId, driver)
+        if (departed(record.view)) throw Conflict("RIDE_DEPARTED", "This ride has already set off.")
+        val passengers = rides.passengers(rideId)
+        if (!cancelAllowed(record.view, passengers)) {
+            throw Conflict("CANCEL_WINDOW_CLOSED", "Rides with confirmed passengers can only be canceled before ${policy.hours} hours.")
+        }
+        val now = clock.instant()
+        rides.setStatus(rideId, RideStatus.CANCELLED, now)
+        passengers.forEach { notifications.send(it.passengerId, NotificationKind.RIDE_CANCELLED, driver, rideId, it.bookingId) }
+        return published(rides.find(rideId)!!)
+    }
+
+    /** The driver marks a ride done once it has set off. */
+    @Transactional
+    fun complete(rideId: UUID, driver: UUID): PublishedRideView {
+        val record = ownScheduled(rideId, driver)
+        if (!departed(record.view)) throw Conflict("NOT_DEPARTED", "A ride can be completed once it has set off.")
+        finish(record)
+        return published(rides.find(rideId)!!)
+    }
+
+    /**
+     * Completes rides whose drivers didn't, [after] their departure. Returns how many it finished. Runs in one
+     * transaction per batch; rides another server has locked are left to it.
+     */
+    @Transactional
+    fun completeOverdue(after: Duration): Int {
+        val due = rides.lockDueForCompletion(clock.instant().minus(after))
+        due.forEach { id -> finish(rides.find(id)!!) }
+        if (due.isNotEmpty()) log.info("Completed {} overdue rides", due.size)
+        return due.size
+    }
+
+    private fun finish(record: RideRecord) {
+        val id = record.view.id
+        val confirmed = rides.passengers(id).filter { it.status == "CONFIRMED" }
+        val now = clock.instant()
+        rides.lapsePendingRequests(id, now)
+        rides.setStatus(id, RideStatus.COMPLETED, now)
+        confirmed.forEach { notifications.send(it.passengerId, NotificationKind.RIDE_COMPLETED, record.view.driver.id, id, it.bookingId) }
+    }
+
+    private fun ownScheduled(rideId: UUID, driver: UUID): RideRecord {
+        rides.lock(rideId)
+        val record = rides.find(rideId) ?: throw NotFound("Ride")
+        if (record.view.driver.id != driver) throw Forbidden("Only the ride's driver can do this.")
+        if (record.status != RideStatus.SCHEDULED) throw Conflict("RIDE_ENDED", "This ride has already ended.")
+        return record
+    }
+
+    private fun departed(ride: RideView) = !ride.departure.toInstant().isAfter(clock.instant())
+
+    private fun cancelAllowed(ride: RideView, passengers: List<Passenger>) =
+        passengers.none { it.status == "CONFIRMED" } || policy.canCancel(ride.departure.toInstant(), clock.instant())
 }
 
 @RestController
@@ -241,7 +365,7 @@ class RidesController(private val service: RideService, private val rides: RideR
     ): List<RideView> = service.recommended(from, to, excluding, seats.coerceIn(1, 6), jwt.userId, settings.zone)
 
     @GetMapping("/rides/{id}")
-    fun get(@PathVariable id: UUID): RideView = rides.find(id)?.first ?: throw NotFound("Ride")
+    fun get(@PathVariable id: UUID): RideView = rides.find(id)?.view ?: throw NotFound("Ride")
 
     @PostMapping("/rides")
     @ResponseStatus(HttpStatus.CREATED)
@@ -249,6 +373,11 @@ class RidesController(private val service: RideService, private val rides: RideR
 
     /** The signed-in driver's rides, newest first, with who has asked for a seat. */
     @GetMapping("/me/rides")
-    fun mine(@AuthenticationPrincipal jwt: Jwt): List<PublishedRideView> =
-        rides.byDriver(jwt.userId).map { (ride, cancelled) -> PublishedRideView(ride, service.tripStatus(ride, cancelled), rides.passengers(ride.id)) }
+    fun mine(@AuthenticationPrincipal jwt: Jwt): List<PublishedRideView> = service.mine(jwt.userId)
+
+    @PostMapping("/rides/{id}/cancel")
+    fun cancel(@AuthenticationPrincipal jwt: Jwt, @PathVariable id: UUID): PublishedRideView = service.cancel(id, jwt.userId)
+
+    @PostMapping("/rides/{id}/complete")
+    fun complete(@AuthenticationPrincipal jwt: Jwt, @PathVariable id: UUID): PublishedRideView = service.complete(id, jwt.userId)
 }

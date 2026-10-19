@@ -16,7 +16,15 @@ data class LiftOnWayProperties(
     val cancellationCutoff: Duration = Duration.ofHours(4),
     /** Fills the database with sample drivers and rides for the coming week (dev only). */
     val demoData: Boolean = false,
+    val retention: Retention = Retention(),
 ) {
+    data class Retention(
+        /** A ride its driver hasn't marked complete is completed automatically this long after departure. */
+        val completeRidesAfter: Duration = Duration.ofHours(6),
+        /** Notifications are deleted after this long. */
+        val notifications: Duration = Duration.ofDays(90),
+    )
+
     data class Jwt(val secret: String = "", val ttl: Duration = Duration.ofDays(7))
 
     data class Otp(

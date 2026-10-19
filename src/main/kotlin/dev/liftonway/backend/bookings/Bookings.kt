@@ -5,8 +5,12 @@ import dev.liftonway.backend.common.Forbidden
 import dev.liftonway.backend.common.LiftOnWayProperties
 import dev.liftonway.backend.common.NotFound
 import dev.liftonway.backend.common.userId
+import dev.liftonway.backend.notifications.NotificationKind
+import dev.liftonway.backend.notifications.Notifications
+import dev.liftonway.backend.rides.RideRecord
 import dev.liftonway.backend.rides.RideRepository
 import dev.liftonway.backend.rides.RideService
+import dev.liftonway.backend.rides.RideStatus
 import dev.liftonway.backend.rides.RideView
 import dev.liftonway.backend.rides.TripStatus
 import jakarta.validation.Valid
@@ -88,18 +92,21 @@ class BookingService(
     private val rides: RideRepository,
     private val rideService: RideService,
     private val policy: CancellationPolicy,
+    private val notifications: Notifications,
     private val clock: Clock,
 ) {
     @Transactional
     fun request(rideId: UUID, passenger: UUID, seats: Int): BookingView {
         rides.lock(rideId)
-        val (ride, cancelled) = rides.find(rideId) ?: throw NotFound("Ride")
-        if (cancelled || !ride.departure.toInstant().isAfter(clock.instant())) throw Conflict("RIDE_UNAVAILABLE", "This ride is no longer available.")
+        val record = rides.find(rideId) ?: throw NotFound("Ride")
+        val ride = record.view
+        if (!open(record)) throw Conflict("RIDE_UNAVAILABLE", "This ride is no longer available.")
         if (ride.driver.id == passenger) throw Conflict("OWN_RIDE", "You can't book a seat on your own ride.")
         if (bookings.hasLive(rideId, passenger)) throw Conflict("ALREADY_REQUESTED", "You've already asked for a seat on this ride.")
         if (ride.seatsLeft < seats) throw Conflict("NO_SEATS", "Not enough seats left on this ride.")
         val id = UUID.randomUUID()
         bookings.insert(id, rideId, passenger, seats, clock.instant())
+        notifications.send(ride.driver.id, NotificationKind.RIDE_REQUEST, passenger, rideId, id)
         return view(bookings.find(id)!!)
     }
 
@@ -109,11 +116,13 @@ class BookingService(
     fun cancel(id: UUID, passenger: UUID): BookingView {
         val booking = bookings.find(id)?.takeIf { it.passengerId == passenger } ?: throw NotFound("Booking")
         if (booking.status !in setOf(BookingStatus.PENDING, BookingStatus.CONFIRMED)) throw Conflict("NOT_ACTIVE", "This request is no longer active.")
-        val ride = rides.find(booking.rideId)!!.first
-        if (!policy.canCancel(ride.departure.toInstant(), clock.instant())) {
+        val record = rides.find(booking.rideId)!!
+        if (record.status != RideStatus.SCHEDULED) throw Conflict("NOT_ACTIVE", "This ride has already ended.")
+        if (!policy.canCancel(record.view.departure.toInstant(), clock.instant())) {
             throw Conflict("CANCEL_WINDOW_CLOSED", "Ride can only be canceled before ${policy.hours} hours.")
         }
         bookings.setStatus(id, BookingStatus.CANCELLED, clock.instant())
+        notifications.send(record.view.driver.id, NotificationKind.REQUEST_WITHDRAWN, passenger, record.view.id, id)
         return view(bookings.find(id)!!)
     }
 
@@ -121,17 +130,24 @@ class BookingService(
     @Transactional
     fun answer(id: UUID, driver: UUID, accept: Boolean): BookingView {
         val booking = bookings.find(id) ?: throw NotFound("Booking")
-        val ride = rides.find(booking.rideId)!!.first
-        if (ride.driver.id != driver) throw Forbidden("Only the ride's driver can answer this request.")
+        val record = rides.find(booking.rideId)!!
+        if (record.view.driver.id != driver) throw Forbidden("Only the ride's driver can answer this request.")
         if (booking.status != BookingStatus.PENDING) throw Conflict("NOT_PENDING", "This request has already been answered.")
+        if (!open(record)) throw Conflict("RIDE_UNAVAILABLE", "This ride has already set off or ended.")
         bookings.setStatus(id, if (accept) BookingStatus.CONFIRMED else BookingStatus.DECLINED, clock.instant())
+        val kind = if (accept) NotificationKind.REQUEST_ACCEPTED else NotificationKind.REQUEST_DECLINED
+        notifications.send(booking.passengerId, kind, driver, record.view.id, id)
         return view(bookings.find(id)!!)
     }
 
+    /** Still taking requests and answers: scheduled and not yet departed. */
+    private fun open(record: RideRecord) =
+        record.status == RideStatus.SCHEDULED && record.view.departure.toInstant().isAfter(clock.instant())
+
     private fun view(b: BookingRow): BookingView {
-        val (ride, cancelled) = rides.find(b.rideId)!!
+        val (ride, status) = rides.find(b.rideId)!!
         val live = b.status == BookingStatus.PENDING || b.status == BookingStatus.CONFIRMED
-        val trip = if (!live) TripStatus.CANCELLED else rideService.tripStatus(ride, cancelled)
+        val trip = if (!live) TripStatus.CANCELLED else rideService.tripStatus(status)
         val canCancel = live && trip == TripStatus.UPCOMING && policy.canCancel(ride.departure.toInstant(), clock.instant())
         return BookingView(b.id, ride, b.seats, b.status, trip, canCancel)
     }
