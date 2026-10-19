@@ -210,6 +210,23 @@ class ApiFlowTest {
         assertEquals("COMPLETED", get("/me/bookings", asma).list.first()["tripStatus"])
         assertEquals("RIDE_COMPLETED", get("/me/notifications", asma).list.first()["kind"])
 
+        // Both sides rate each other once; the driver's average updates. Declined passengers can't rate.
+        val asmaTrip = get("/me/bookings", asma).list.first { it["id"] == asmaBooking }
+        assertEquals(true, asmaTrip["canRate"])
+        assertEquals("ABC 123", (asmaTrip["vehicle"] as Map<*, *>)["plate"])
+        assertEquals(null, (get("/me/bookings", omar).list.first { it["id"] == omarBooking }["vehicle"] as Map<*, *>)["plate"])
+        assertEquals(201, post("/bookings/$asmaBooking/rating", mapOf("stars" to 4), asma).status)
+        assertEquals("ALREADY_RATED", post("/bookings/$asmaBooking/rating", mapOf("stars" to 5), asma).code)
+        assertEquals("NOT_RATEABLE", post("/bookings/$omarBooking/rating", mapOf("stars" to 1), omar).code)
+        assertEquals(400, post("/bookings/$asmaBooking/rating", mapOf("stars" to 6), driver).status)
+        assertEquals(201, post("/bookings/$asmaBooking/rating", mapOf("stars" to 5), driver).status)
+        assertEquals(4.0, get("/me", driver).json["rating"])
+        assertEquals(5.0, get("/me", asma).json["rating"])
+        assertEquals(4, get("/me/bookings", asma).list.first { it["id"] == asmaBooking }["myRating"])
+        val rated = (mine(rideId)["passengers"] as List<*>).single() as Map<*, *>
+        assertEquals(5, rated["myRating"])
+        assertEquals(false, rated["canRate"])
+
         // A ride nobody is confirmed on can be called off late; whoever asked hears about it.
         clock.now = TestInfra.START
         val second = publish("2026-10-21T08:00:00+05:00")

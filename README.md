@@ -47,12 +47,14 @@ The API is then at `http://localhost:8080/api/v1`, with interactive docs at `htt
 | `POST /rides/{id}/cancel`, `/complete` | Driver calls a ride off, or marks it done once it has set off |
 | `GET /me/notifications`, `GET /me/notifications/unread` | Requests, answers and ride updates, newest first |
 | `POST /me/notifications/read`, `DELETE /me/notifications/{id}` | Mark all read; remove one |
+| `POST /bookings/{id}/rating` | After a completed ride: the passenger rates the driver, or the driver rates the passenger |
 
 ### Ride rules
 
 - **Requests:** a seat is held while a request is pending, so the driver never accepts more people than seats.
 - **Driver cancels:** any time before departure while nobody is confirmed. With confirmed passengers, the same 4-hour rule as passengers applies.
 - **Completion:** the driver taps Complete once the ride has set off. Rides they forget are completed 6 hours after departure by a background job, and requests nobody answered lapse.
+- **Ratings:** one to five stars, once per side per seat, for 14 days after a completed ride. A user's rating is the average of what they've received. Seats show the car's number plate only once confirmed.
 - **Notifications:** written in the same transaction as the change they describe, and deleted after 90 days. Names are looked up when read, never copied.
 
 Errors use RFC 9457 problem responses with a stable `code`, such as `CANCEL_WINDOW_CLOSED`, `NO_SEATS` or `TOO_MANY_REQUESTS`, and a message the app can show as-is.
@@ -77,5 +79,4 @@ Phone numbers and names are personal data. Before any real users, this needs a p
 - Photo upload for profiles and vehicles. The app keeps photos on the device for now.
 - Payments and the wallet. The app still uses in-memory data for these.
 - Push notifications. The app checks for new ones every 30 seconds while it's open.
-- Ratings. Drivers created through the API show as "New".
 - The verify step reveals whether a number has an account (it answers `NAME_REQUIRED`). That's acceptable for a prototype, but worth revisiting.

@@ -7,12 +7,15 @@ import dev.liftonway.backend.common.NotFound
 import dev.liftonway.backend.common.userId
 import dev.liftonway.backend.notifications.NotificationKind
 import dev.liftonway.backend.notifications.Notifications
+import dev.liftonway.backend.ratings.RatingPolicy
+import dev.liftonway.backend.ratings.RatingRepository
 import dev.liftonway.backend.rides.RideRecord
 import dev.liftonway.backend.rides.RideRepository
 import dev.liftonway.backend.rides.RideService
 import dev.liftonway.backend.rides.RideStatus
 import dev.liftonway.backend.rides.RideView
 import dev.liftonway.backend.rides.TripStatus
+import dev.liftonway.backend.vehicles.VehicleRepository
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
@@ -39,7 +42,21 @@ import java.util.UUID
 
 enum class BookingStatus { PENDING, CONFIRMED, DECLINED, CANCELLED }
 
-data class BookingView(val id: UUID, val ride: RideView, val seats: Int, val status: BookingStatus, val tripStatus: TripStatus, val canCancel: Boolean)
+/** The car as a passenger sees it. The number plate is shared only once their seat is confirmed. */
+data class VehicleBrief(val name: String, val model: String, val colour: String, val airConditioning: Boolean, val heater: Boolean, val plate: String?)
+
+data class BookingView(
+    val id: UUID,
+    val ride: RideView,
+    val seats: Int,
+    val status: BookingStatus,
+    val tripStatus: TripStatus,
+    val canCancel: Boolean,
+    val vehicle: VehicleBrief?,
+    /** Stars this passenger gave the driver, once rated. */
+    val myRating: Int?,
+    val canRate: Boolean,
+)
 
 data class RequestSeats(@field:Min(1) @field:Max(6) val seats: Int = 1)
 
@@ -93,6 +110,9 @@ class BookingService(
     private val rideService: RideService,
     private val policy: CancellationPolicy,
     private val notifications: Notifications,
+    private val vehicles: VehicleRepository,
+    private val ratings: RatingRepository,
+    private val ratingPolicy: RatingPolicy,
     private val clock: Clock,
 ) {
     @Transactional
@@ -149,7 +169,12 @@ class BookingService(
         val live = b.status == BookingStatus.PENDING || b.status == BookingStatus.CONFIRMED
         val trip = if (!live) TripStatus.CANCELLED else rideService.tripStatus(status)
         val canCancel = live && trip == TripStatus.UPCOMING && policy.canCancel(ride.departure.toInstant(), clock.instant())
-        return BookingView(b.id, ride, b.seats, b.status, trip, canCancel)
+        val vehicle = vehicles.find(ride.driver.id)?.let {
+            VehicleBrief(it.name, it.model, it.colour, it.airConditioning, it.heater, plate = it.plate.takeIf { b.status == BookingStatus.CONFIRMED })
+        }
+        val myRating = ratings.given(b.passengerId, listOf(b.id))[b.id]
+        val canRate = myRating == null && ratingPolicy.open(status, b.status, ride.departure.toInstant())
+        return BookingView(b.id, ride, b.seats, b.status, trip, canCancel, vehicle, myRating, canRate)
     }
 }
 

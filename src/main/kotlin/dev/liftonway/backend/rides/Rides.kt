@@ -1,5 +1,6 @@
 package dev.liftonway.backend.rides
 
+import dev.liftonway.backend.bookings.BookingStatus
 import dev.liftonway.backend.bookings.CancellationPolicy
 import dev.liftonway.backend.common.Conflict
 import dev.liftonway.backend.common.Forbidden
@@ -10,6 +11,8 @@ import dev.liftonway.backend.common.userId
 import dev.liftonway.backend.notifications.NotificationKind
 import dev.liftonway.backend.notifications.Notifications
 import dev.liftonway.backend.places.Place
+import dev.liftonway.backend.ratings.RatingPolicy
+import dev.liftonway.backend.ratings.RatingRepository
 import dev.liftonway.backend.places.PlaceRepository
 import dev.liftonway.backend.vehicles.VehicleRepository
 import jakarta.validation.Valid
@@ -77,7 +80,17 @@ data class PublishRide(
     @field:Size(max = 200) val route: String = "",
 )
 
-data class Passenger(val bookingId: UUID, val passengerId: UUID, val name: String, val photoUrl: String?, val seats: Int, val status: String)
+data class Passenger(
+    val bookingId: UUID,
+    val passengerId: UUID,
+    val name: String,
+    val photoUrl: String?,
+    val seats: Int,
+    val status: String,
+    /** Stars the driver gave this passenger, once rated. */
+    val myRating: Int? = null,
+    val canRate: Boolean = false,
+)
 
 /** A driver's own ride. [canCancel] and [canComplete] say which lifecycle actions the server would accept now. */
 data class PublishedRideView(
@@ -225,6 +238,8 @@ class RideService(
     private val vehicles: VehicleRepository,
     private val policy: CancellationPolicy,
     private val notifications: Notifications,
+    private val ratings: RatingRepository,
+    private val ratingPolicy: RatingPolicy,
     private val clock: Clock,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -267,7 +282,12 @@ class RideService(
     }
 
     fun published(record: RideRecord): PublishedRideView {
-        val passengers = rides.passengers(record.view.id)
+        val given = ratings.given(record.view.driver.id, rides.passengers(record.view.id).map { it.bookingId })
+        val departure = record.view.departure.toInstant()
+        val passengers = rides.passengers(record.view.id).map {
+            val stars = given[it.bookingId]
+            it.copy(myRating = stars, canRate = stars == null && ratingPolicy.open(record.status, BookingStatus.valueOf(it.status), departure))
+        }
         val scheduled = record.status == RideStatus.SCHEDULED
         return PublishedRideView(
             record.view,
