@@ -34,6 +34,9 @@ services:
       TWILIO_API_KEY_SECRET: ${TWILIO_API_KEY_SECRET}
       TWILIO_MESSAGING_SERVICE_SID: ${TWILIO_MESSAGING_SERVICE_SID:-}
       TWILIO_FROM: ${TWILIO_FROM:-}
+      FIREBASE_CREDENTIALS_FILE: /run/secrets/firebase.json
+    secrets:
+      - firebase.json
 
   caddy:
     image: caddy:2
@@ -47,6 +50,11 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
+
+# The Firebase service account key, read from a file next to this one. Never commit it.
+secrets:
+  firebase.json:
+    file: ./firebase-service-account.json
 
 volumes:
   db-data:

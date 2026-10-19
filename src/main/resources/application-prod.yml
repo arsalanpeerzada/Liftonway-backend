@@ -34,3 +34,7 @@ liftonway:
       api-key-secret: ${TWILIO_API_KEY_SECRET:}
       messaging-service-sid: ${TWILIO_MESSAGING_SERVICE_SID:}
       from: ${TWILIO_FROM:}
+  push:
+    fcm:
+      # Path to the Firebase service account key, mounted as a secret file. Push is off when empty.
+      credentials-file: ${FIREBASE_CREDENTIALS_FILE:}

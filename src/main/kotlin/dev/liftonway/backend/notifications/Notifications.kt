@@ -3,6 +3,7 @@ package dev.liftonway.backend.notifications
 import dev.liftonway.backend.common.LiftOnWayProperties
 import dev.liftonway.backend.common.NotFound
 import dev.liftonway.backend.common.userId
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -57,22 +58,38 @@ data class NotificationView(
 
 data class UnreadCount(val count: Int)
 
+/** Published when a notification is stored; push delivery listens for it once the transaction commits. */
+data class NotificationCreated(val id: UUID, val userId: UUID)
+
 @Repository
-class Notifications(private val jdbc: JdbcClient, private val settings: LiftOnWayProperties, private val clock: Clock) {
+class Notifications(
+    private val jdbc: JdbcClient,
+    private val settings: LiftOnWayProperties,
+    private val clock: Clock,
+    private val events: ApplicationEventPublisher,
+) {
 
     /** Adds a notification for [to]. Call inside the transaction that made the change, so both land or neither does. */
     fun send(to: UUID, kind: NotificationKind, actor: UUID?, ride: UUID?, booking: UUID? = null) {
+        val id = UUID.randomUUID()
         jdbc.sql(
             """insert into notifications (id, user_id, kind, actor_id, ride_id, booking_id, created_at)
                values (:id, :to, :kind, :actor, :ride, :booking, :now)""",
         )
-            .param("id", UUID.randomUUID()).param("to", to).param("kind", kind.name).param("actor", actor)
+            .param("id", id).param("to", to).param("kind", kind.name).param("actor", actor)
             .param("ride", ride).param("booking", booking).param("now", Timestamp.from(clock.instant()))
             .update()
+        events.publishEvent(NotificationCreated(id, to))
     }
 
-    fun list(user: UUID, limit: Int = 100): List<NotificationView> = jdbc.sql(
-        """select n.*, a.name as actor_name, a.photo_url as actor_photo,
+    fun list(user: UUID, limit: Int = 100): List<NotificationView> =
+        jdbc.sql("$select where n.user_id = :user order by n.created_at desc limit :limit")
+            .param("user", user).param("limit", limit).query { rs, _ -> view(rs) }.list()
+
+    fun find(id: UUID): NotificationView? =
+        jdbc.sql("$select where n.id = :id").param("id", id).query { rs, _ -> view(rs) }.optional().orElse(null)
+
+    private val select = """select n.*, a.name as actor_name, a.photo_url as actor_photo,
                   r.departure, r.status as ride_status, b.status as booking_status, b.seats,
                   (select p.title from ride_points rp join places p on p.id = rp.place_id
                     where rp.ride_id = n.ride_id order by rp.position limit 1) as from_title,
@@ -81,10 +98,7 @@ class Notifications(private val jdbc: JdbcClient, private val settings: LiftOnWa
            from notifications n
            left join users a on a.id = n.actor_id
            left join rides r on r.id = n.ride_id
-           left join bookings b on b.id = n.booking_id
-           where n.user_id = :user
-           order by n.created_at desc limit :limit""",
-    ).param("user", user).param("limit", limit).query { rs, _ -> view(rs) }.list()
+           left join bookings b on b.id = n.booking_id"""
 
     fun unread(user: UUID): Int =
         jdbc.sql("select count(*) from notifications where user_id = :user and read_at is null").param("user", user).query(Int::class.java).single()

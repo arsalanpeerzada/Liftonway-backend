@@ -16,7 +16,12 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.web.client.RestClient
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import javax.sql.DataSource
+import dev.liftonway.backend.push.Devices
+import dev.liftonway.backend.push.PushMessage
+import dev.liftonway.backend.push.PushSender
 import dev.liftonway.backend.rides.RideService
+import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -26,6 +31,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+
+class CapturedPushes : PushSender {
+    val sent = CopyOnWriteArrayList<Pair<String, PushMessage>>()
+
+    override fun send(deviceToken: String, message: PushMessage): Boolean {
+        sent += deviceToken to message
+        return deviceToken != "dead-token"
+    }
+}
 
 /** A clock the tests can move, so the 4-hour rule can be checked either side of the line. */
 class MutableClock(var now: Instant, private val zone: ZoneId = ZoneOffset.UTC) : Clock() {
@@ -47,6 +61,11 @@ class TestInfra {
     @Primary
     fun testClock() = MutableClock(START)
 
+    /** Records pushes instead of sending them. */
+    @Bean
+    @Primary
+    fun capturedPushes() = CapturedPushes()
+
     companion object {
         /** Sunday 19 October 2026, 10:00 in Pakistan. */
         val START: Instant = Instant.parse("2026-10-19T05:00:00Z")
@@ -63,6 +82,10 @@ class ApiFlowTest {
     @Autowired lateinit var clock: MutableClock
 
     @Autowired lateinit var rides: RideService
+
+    @Autowired lateinit var pushes: CapturedPushes
+
+    @Autowired lateinit var devices: Devices
 
     private val http by lazy { RestClient.builder().baseUrl("http://localhost:$port/api/v1").build() }
 
@@ -277,6 +300,44 @@ class ApiFlowTest {
         assertEquals(204, post("/auth/logout", mapOf("refreshToken" to token)).status)
         assertEquals(204, post("/auth/logout", mapOf("refreshToken" to token)).status)
         assertEquals("INVALID_REFRESH", post("/auth/refresh", mapOf("refreshToken" to token)).code)
+    }
+
+    @Test
+    fun `new notifications are pushed to the recipient's phones after commit, and dead tokens are dropped`() {
+        val driverNumber = mapOf("countryCode" to "+92", "number" to "3001150001")
+        post("/auth/otp", driverNumber)
+        val driverSession = post("/auth/verify", driverNumber + mapOf("code" to "1234", "name" to "Push Driver")).json
+        val driver = driverSession["token"] as String
+        put("/me/vehicle", mapOf("name" to "Kia Picanto", "model" to "2022", "plate" to "PSH 1", "colour" to "Red", "airConditioning" to true, "heater" to false), driver)
+        val ride = post(
+            "/rides",
+            mapOf("from" to "dha2", "to" to "airport", "departure" to "2026-10-20T07:00:00+05:00", "seats" to 2, "pricePerSeat" to 900),
+            driver,
+        ).json["id"] as String
+        assertEquals(204, put("/me/device", mapOf("token" to "driver-phone"), driver).status)
+        assertEquals(204, put("/me/device", mapOf("token" to "dead-token"), driver).status)
+
+        val rider = signUp("Push Rider", "3001150002")
+        val failed = post("/rides/$ride/bookings", mapOf("seats" to 5), rider)
+        assertEquals("NO_SEATS", failed.code)
+        post("/rides/$ride/bookings", mapOf("seats" to 1), rider)
+
+        val deadline = System.currentTimeMillis() + 5_000
+        while (pushes.sent.count { it.first == "driver-phone" } < 1 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        val (_, message) = pushes.sent.single { it.first == "driver-phone" }
+        assertEquals("New seat request", message.title)
+        assertTrue(message.body.startsWith("Push Rider wants a seat from"), message.body)
+        assertEquals("RIDE_REQUEST", message.data["kind"])
+        assertEquals(ride, message.data["rideId"])
+
+        // FCM reported the other token dead, so it's forgotten.
+        val driverId = UUID.fromString(get("/me", driver).json["id"] as String)
+        while (devices.of(driverId).size > 1 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        assertEquals(listOf("driver-phone"), devices.of(driverId))
+
+        // Signing out with the device token stops pushes to that phone.
+        post("/auth/logout", mapOf("refreshToken" to driverSession["refreshToken"], "deviceToken" to "driver-phone"))
+        assertEquals(emptyList(), devices.of(driverId))
     }
 
     @Test

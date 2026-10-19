@@ -11,3 +11,6 @@ out/
 application-local.yml
 *.jks
 *.p12
+# Firebase service account keys
+*service-account*.json
+firebase*.json

@@ -3,6 +3,7 @@ package dev.liftonway.backend.auth
 import dev.liftonway.backend.common.ApiException
 import dev.liftonway.backend.common.PhoneNumbers
 import dev.liftonway.backend.common.Tokens
+import dev.liftonway.backend.push.Devices
 import dev.liftonway.backend.users.Me
 import dev.liftonway.backend.users.MeController
 import dev.liftonway.backend.users.UserRepository
@@ -39,6 +40,9 @@ data class Session(
 
 data class RefreshBody(@field:NotBlank val refreshToken: String)
 
+/** [deviceToken] stops pushes to this phone once it's signed out. */
+data class LogoutBody(@field:NotBlank val refreshToken: String, val deviceToken: String? = null)
+
 /** A renewed pair. The old refresh token is spent and must not be used again. */
 data class Renewed(val token: String, val expiresAt: Instant, val refreshToken: String, val refreshExpiresAt: Instant)
 
@@ -49,6 +53,7 @@ class AuthController(
     private val users: UserRepository,
     private val tokens: Tokens,
     private val refreshTokens: RefreshTokens,
+    private val devices: Devices,
     private val me: MeController,
 ) {
     @PostMapping("/otp")
@@ -82,5 +87,8 @@ class AuthController(
     /** Ends this device's sign-in. Always succeeds, so the app can sign out offline and retry later. */
     @PostMapping("/logout")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    fun logout(@Valid @RequestBody body: RefreshBody) = refreshTokens.revoke(body.refreshToken)
+    fun logout(@Valid @RequestBody body: LogoutBody) {
+        refreshTokens.revoke(body.refreshToken)
+        body.deviceToken?.let(devices::forget)
+    }
 }

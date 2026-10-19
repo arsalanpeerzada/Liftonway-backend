@@ -41,6 +41,10 @@ For a single Linux server, `deploy/` has a ready setup: PostgreSQL, the API, and
 3. `cd deploy && docker compose up -d --build`
 
 What you need first:
+- **Firebase:**
+  - Download a service account key: Firebase console, then Project settings, Service accounts, Generate new private key.
+  - Save it as `deploy/firebase-service-account.json` on the server only. Git ignores it, but don't paste it anywhere, and delete the downloaded copy once it's on the server.
+  - The compose file mounts it as a secret.
 - **Twilio:** an account, an API key (not the auth token), and a Messaging Service with a sender that can reach Pakistani numbers. Sending to Pakistan may need sender registration on Twilio's side; check their country guidelines before launch.
 - **A token secret:** at least 32 random bytes, for example from `openssl rand -base64 48`.
 - **Backups:** the compose setup keeps data in a Docker volume on that one server. Before real users, schedule `pg_dump` off the machine, or use a managed PostgreSQL with automatic backups instead (set `SPRING_DATASOURCE_*` and drop the `db` service).
@@ -58,7 +62,8 @@ In production:
 | --- | --- |
 | `POST /auth/otp` | Send a code to a number |
 | `POST /auth/verify` | Check the code; signs in, or signs up when a name is sent with a new number |
-| `POST /auth/refresh`, `POST /auth/logout` | Swap a refresh token for a new pair; end this device's session |
+| `POST /auth/refresh`, `POST /auth/logout` | Swap a refresh token for a new pair; end this device's session (and stop its pushes) |
+| `PUT /me/device` | Register this phone for push notifications |
 | `GET, PATCH /me` | The signed-in account |
 | `POST /me/phone/otp`, `POST /me/phone/verify` | Change number |
 | `GET, PUT /me/vehicle` | The user's car (needed to publish) |
@@ -80,6 +85,11 @@ In production:
 - **Completion:** the driver taps Complete once the ride has set off. Rides they forget are completed 6 hours after departure by a background job, and requests nobody answered lapse.
 - **Ratings:** one to five stars, once per side per seat, for 14 days after a completed ride. A user's rating is the average of what they've received. Seats show the car's number plate only once confirmed.
 - **Notifications:** written in the same transaction as the change they describe, and deleted after 90 days. Names are looked up when read, never copied.
+- **Push:**
+  - Each notification also goes to the recipient's phones through Firebase Cloud Messaging, after the transaction commits and off the request thread.
+  - Push is sent as a high-priority data message that expires after 12 hours.
+  - Phones that FCM reports as gone are forgotten.
+  - Without Firebase credentials (local development), push is skipped.
 
 Errors use RFC 9457 problem responses with a stable `code`, such as `CANCEL_WINDOW_CLOSED`, `NO_SEATS` or `TOO_MANY_REQUESTS`, and a message the app can show as-is.
 
