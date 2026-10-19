@@ -6,7 +6,6 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.test.web.server.LocalServerPort
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Primary
@@ -15,7 +14,8 @@ import org.springframework.http.HttpMethod
 import org.springframework.http.MediaType
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.web.client.RestClient
-import org.testcontainers.postgresql.PostgreSQLContainer
+import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import javax.sql.DataSource
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
@@ -34,9 +34,12 @@ class MutableClock(var now: Instant, private val zone: ZoneId = ZoneOffset.UTC) 
 
 @TestConfiguration(proxyBeanMethods = false)
 class TestInfra {
+    /** A real, throwaway PostgreSQL for this test run, started in-process. */
+    @Bean(destroyMethod = "close")
+    fun postgres(): EmbeddedPostgres = EmbeddedPostgres.start()
+
     @Bean
-    @ServiceConnection
-    fun postgres() = PostgreSQLContainer("postgres:17-alpine")
+    fun dataSource(postgres: EmbeddedPostgres): DataSource = postgres.postgresDatabase
 
     @Bean
     @Primary
@@ -48,7 +51,7 @@ class TestInfra {
     }
 }
 
-/** The core journey end to end against a real PostgreSQL, through the HTTP API the app will call. */
+/** The core journey end to end against a real PostgreSQL (embedded), through the HTTP API the app will call. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 @Import(TestInfra::class)

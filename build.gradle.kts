@@ -11,13 +11,13 @@ group = "dev.liftonway"
 version = "0.1.0"
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
 
 kotlin {
     compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_21)
+        jvmTarget.set(JvmTarget.JVM_17)
         // Nullability from Spring's JSpecify annotations, as Spring Boot 4 recommends for Kotlin.
         freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
     }
@@ -26,7 +26,7 @@ kotlin {
 dependencies {
     // Spring Boot's BOM manages every version below that has none of its own.
     implementation(platform(SpringBootPlugin.BOM_COORDINATES))
-    testImplementation(platform(libs.testcontainers.bom))
+    testImplementation(platform(libs.postgres.binaries.bom))
 
     implementation(libs.spring.boot.starter.webmvc)
     implementation(libs.spring.boot.starter.validation)
@@ -40,16 +40,16 @@ dependencies {
     implementation(libs.springdoc.webmvc.ui)
     runtimeOnly(libs.flyway.database.postgresql)
     runtimeOnly(libs.postgresql)
-    // Starts compose.yaml's PostgreSQL with `bootRun`; never part of the built jar.
-    developmentOnly(libs.spring.boot.docker.compose)
+    // `bootRun` starts a real PostgreSQL in-process (see DevDatabase); compiled against, never packaged.
+    compileOnly(libs.embedded.postgres)
+    developmentOnly(libs.embedded.postgres)
+    developmentOnly(platform(libs.postgres.binaries.bom))
 
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.boot.starter.webmvc.test)
-    testImplementation(libs.spring.boot.testcontainers)
     testImplementation(libs.spring.security.test)
     testImplementation(libs.kotlin.test.junit5)
-    testImplementation(libs.testcontainers.postgresql)
-    testImplementation(libs.testcontainers.junit.jupiter)
+    testImplementation(libs.embedded.postgres)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -57,7 +57,7 @@ tasks.withType<Test> {
     useJUnitPlatform()
 }
 
-// `./gradlew bootRun` is local development: PostgreSQL from compose.yaml, the fixed test code, demo rides.
+// `./gradlew bootRun` is local development: an embedded PostgreSQL, the fixed test code, demo rides.
 tasks.bootRun {
     args("--spring.profiles.active=dev")
 }

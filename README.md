@@ -6,7 +6,7 @@ Built with Spring Boot 4.1 and Kotlin, on PostgreSQL with Flyway migrations. The
 
 ## Run it locally
 
-You need Docker Desktop running and JDK 17 or later (Android Studio's bundled JDK works).
+You need JDK 17 or later (Android Studio's bundled JDK works). Nothing else: no database to install and no Docker.
 
 ```bash
 ./gradlew bootRun
@@ -14,11 +14,11 @@ You need Docker Desktop running and JDK 17 or later (Android Studio's bundled JD
 
 This turns on the `dev` profile:
 
-- **Database:** PostgreSQL starts from `compose.yaml`.
+- **Database:** a real PostgreSQL 17 starts inside the app (the embedded-postgres library), keeping its data in `~/.liftonway/dev-postgres` between runs. Delete that folder to start fresh.
 - **Codes:** every one-time code is `1234`, and no SMS is sent.
 - **Demo data:** a week of sample rides between the seeded places, with made-up drivers.
 
-The API is then at `http://localhost:8080/api/v1`, with interactive docs at `http://localhost:8080/docs`. The Android emulator reaches it at `http://10.0.2.2:8080/api/v1/`, which is the app's default.
+The API is then at `http://localhost:8080/api/v1`, with interactive docs at `http://localhost:8080/docs` (dev only; they are switched off in other profiles). The Android emulator reaches it at `http://10.0.2.2:8080/api/v1/`, which is the app's default.
 
 ## Tests
 
@@ -26,7 +26,7 @@ The API is then at `http://localhost:8080/api/v1`, with interactive docs at `htt
 ./gradlew test
 ```
 
-- **Integration:** Testcontainers starts a real PostgreSQL, so Docker must be running. `ApiFlowTest` drives the whole journey over HTTP: publish, search including stops, request, accept, cancel either side of the 4-hour line, code rate limits and attempt caps.
+- **Integration:** each run starts its own throwaway PostgreSQL, so no setup is needed. `ApiFlowTest` drives the whole journey over HTTP: publish, search including stops, request, accept, cancel either side of the 4-hour line, code rate limits and attempt caps.
 - **Unit:** `RulesTest` covers the cancellation rule and phone number handling.
 
 ## API at a glance
@@ -57,7 +57,7 @@ Errors use RFC 9457 problem responses with a stable `code`, such as `CANCEL_WIND
   - Never logged; logs show masked numbers only.
 - **Tokens:** HS256 JWTs, valid for 7 days. Outside `dev` and `test`, `LIFTONWAY_JWT_SECRET` must be set to at least 32 random bytes from a secret store, or the app refuses to start.
 - **SMS:** no provider is plugged in yet. Outside `dev` and `test` the app refuses to start until an `SmsSender` bean is added, so it can never silently skip sending codes.
-- **Database:** set `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD` from the environment. The password in `compose.yaml` is a local-only placeholder.
+- **Database:** deployed builds use a managed PostgreSQL, set through `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD` from the environment. The embedded database is development-only and is left out of the built jar.
 
 Phone numbers and names are personal data. Before any real users, this needs a privacy notice, a retention policy for old code records, and a review against the applicable data protection law.
 

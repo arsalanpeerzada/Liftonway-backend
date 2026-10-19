@@ -5,7 +5,7 @@ spring:
     # Dates go out as ISO-8601 with their offset, e.g. 2026-10-20T08:00:00+05:00.
     time-zone: Asia/Karachi
   # The database comes from SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD when deployed;
-  # `bootRun` gets it from compose.yaml and the tests from Testcontainers.
+  # `bootRun` and the tests start an embedded PostgreSQL instead.
   threads:
     virtual:
       enabled: true
@@ -21,8 +21,12 @@ management:
       exposure:
         include: health
 
+# API docs are a development aid: off unless the dev profile turns them on.
 springdoc:
+  api-docs:
+    enabled: false
   swagger-ui:
+    enabled: false
     path: /docs
 
 liftonway:
