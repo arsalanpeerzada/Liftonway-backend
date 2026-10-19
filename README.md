@@ -32,7 +32,45 @@ The API is then at `http://localhost:8080/api/v1`, with interactive docs at `htt
 
 ## Deploy
 
-The repository builds into a Docker image (`Dockerfile`) that runs with the `prod` profile and takes all configuration from environment variables. It runs anywhere that can run a container: a single server, Railway, Render, Fly.io, or a cloud provider's container service with its managed PostgreSQL.
+The repository builds into a Docker image (`Dockerfile`) that runs with the `prod` profile and takes all configuration from environment variables. It runs anywhere that can run a container. The database comes from `SPRING_DATASOURCE_URL`, `_USERNAME` and `_PASSWORD`, or from a single `DATABASE_URL` as Railway and Render provide it.
+
+### Railway (recommended for the pilot)
+
+Railway builds the `Dockerfile` on every push to `main` and runs it with a managed PostgreSQL. The app reads Railway's `DATABASE_URL` and `PORT` itself.
+
+1. **Project:** in Railway, create a project, then add a database: **PostgreSQL**. Under the database's settings, turn on **Backups**. Pick a region near Pakistan (for example Singapore) for both services. Customer data then lives outside Pakistan, which belongs in the data protection review.
+2. **API service:** add a service from GitHub, choose `arsalanpeerzada/Liftonway-backend` (allow Railway's GitHub app to see that private repo), branch `main`. Railway finds the Dockerfile.
+3. **Variables** on the API service. Mark every secret as **Sealed** (three-dot menu, then Seal).
+
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (a reference; Railway fills it in) |
+   | `LIFTONWAY_JWT_SECRET` | 48 random bytes, base64; see below. Sealed |
+   | `TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET` | From the Twilio console. Secret and key sealed |
+   | `TWILIO_MESSAGING_SERVICE_SID` (or `TWILIO_FROM`) | The sender |
+   | `FIREBASE_CREDENTIALS_BASE64` | The Firebase service account key, base64-encoded; see below. Sealed |
+
+   `SPRING_PROFILES_ACTIVE=prod` is already set by the image.
+
+4. **Settings:**
+   - **Healthcheck path:** `/actuator/health/readiness`.
+   - **Restart policy:** on failure.
+   - **Networking:** generate a domain (or add your own). Railway serves it over HTTPS.
+5. **Deploy:** the server applies the database migrations on its first start. Point the app at it with `./gradlew assembleRelease -Pliftonway.releaseApiUrl=https://<your-domain>/api/v1/`.
+
+Generating the two values on Windows PowerShell (paste the output straight into Railway, nowhere else):
+
+```powershell
+$b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
+```
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:/path/to/firebase-service-account.json"))
+```
+
+The server refuses to start without Twilio and the token secret. That's deliberate: it never runs with sign-in codes unsent, and the fixed development code can never be switched on under `prod`.
+
+### Your own server
 
 For a single Linux server, `deploy/` has a ready setup: PostgreSQL, the API, and Caddy in front, which gets and renews HTTPS certificates on its own.
 

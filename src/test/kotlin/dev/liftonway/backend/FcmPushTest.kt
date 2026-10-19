@@ -71,7 +71,7 @@ class FcmPushTest {
     @AfterEach
     fun stop() = server.stop(0)
 
-    private fun sender(dir: File): FcmPushSender {
+    private fun sender(dir: File, inline: Boolean = false): FcmPushSender {
         val pem = "-----BEGIN PRIVATE KEY-----\n" + Base64.getMimeEncoder().encodeToString(keys.private.encoded) + "\n-----END PRIVATE KEY-----\n"
         val file = File(dir, "test-account.json")
         file.writeText(
@@ -86,7 +86,12 @@ class FcmPushTest {
                 ),
             ),
         )
-        return FcmPushSender(FcmProperties(credentialsFile = file.path, sendUrl = base), MutableClock(Instant.parse("2026-10-19T05:00:00Z")))
+        val props = if (inline) {
+            FcmProperties(credentialsBase64 = Base64.getEncoder().encodeToString(file.readBytes()), sendUrl = base)
+        } else {
+            FcmProperties(credentialsFile = file.path, sendUrl = base)
+        }
+        return FcmPushSender(props, MutableClock(Instant.parse("2026-10-19T05:00:00Z")))
     }
 
     private val message = PushMessage("New seat request", "Asma wants a seat.", mapOf("kind" to "RIDE_REQUEST"))
@@ -109,6 +114,12 @@ class FcmPushTest {
         assertEquals("device-2", sent["token"])
         assertEquals(mapOf("kind" to "RIDE_REQUEST", "title" to "New seat request", "body" to "Asma wants a seat."), sent["data"])
         assertEquals(mapOf("priority" to "HIGH", "ttl" to "43200s"), sent["android"])
+    }
+
+    @Test
+    fun `the key can come base64-encoded from a variable instead of a file`(@TempDir dir: File) {
+        assertTrue(sender(dir, inline = true).send("device-1", message))
+        assertEquals("/v1/projects/test-project/messages:send", sendPath)
     }
 
     @Test

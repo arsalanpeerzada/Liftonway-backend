@@ -2,6 +2,7 @@ package dev.liftonway.backend
 
 import dev.liftonway.backend.bookings.CancellationPolicy
 import dev.liftonway.backend.common.Invalid
+import dev.liftonway.backend.common.JdbcTarget
 import dev.liftonway.backend.common.LiftOnWayProperties
 import dev.liftonway.backend.common.PhoneNumbers
 import dev.liftonway.backend.common.WindowLimiter
@@ -53,5 +54,15 @@ class RulesTest {
         assertNull(limiter.acquire("b"), "each key counts separately")
         clock.now = Instant.parse("2026-10-19T05:01:00Z")
         assertNull(limiter.acquire("a"), "a new window starts afresh")
+    }
+
+    @Test
+    fun `a host's DATABASE_URL becomes a JDBC address and credentials`() {
+        val target = JdbcTarget.fromDatabaseUrl("postgresql://app%40user:p%3Ass@db.internal:6543/railway?sslmode=require")
+        assertEquals("jdbc:postgresql://db.internal:6543/railway?sslmode=require", target.url)
+        assertEquals("app@user", target.username)
+        assertEquals("p:ss", target.password)
+        assertEquals("jdbc:postgresql://db:5432/app", JdbcTarget.fromDatabaseUrl("postgres://u:p@db/app").url)
+        assertThrows<IllegalArgumentException> { JdbcTarget.fromDatabaseUrl("mysql://u:p@db/app") }
     }
 }

@@ -7,6 +7,7 @@ import dev.liftonway.backend.common.PhoneNumbers
 import dev.liftonway.backend.common.TooManyRequests
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.core.env.Environment
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Service
@@ -42,6 +43,7 @@ class OtpService(
     private val settings: LiftOnWayProperties,
     private val signingKey: SecretKey,
     sms: ObjectProvider<SmsSender>,
+    env: Environment,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val otp = settings.otp
@@ -49,6 +51,10 @@ class OtpService(
     private val sender: SmsSender? = sms.ifAvailable
 
     init {
+        // The fixed test code would let anyone sign in to any number, so it can never be switched on in production.
+        check(otp.devCode == null || !env.matchesProfiles("prod")) {
+            "liftonway.otp.dev-code (LIFTONWAY_OTP_DEV_CODE) must not be set in production."
+        }
         check(otp.devCode != null || sender != null) {
             "No SmsSender bean and no liftonway.otp.dev-code: sign-in can't send codes. Configure an SMS provider."
         }

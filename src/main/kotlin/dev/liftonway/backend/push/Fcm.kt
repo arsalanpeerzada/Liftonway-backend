@@ -25,13 +25,14 @@ import java.util.Base64
 import java.util.Date
 
 /**
- * Firebase Cloud Messaging. [credentialsFile] is a service account key from the Firebase console, mounted as a
- * secret file on the server (never committed, never in an environment variable's value). The project comes from
- * the key unless [projectId] overrides it.
+ * Firebase Cloud Messaging. The service account key from the Firebase console comes either as a secret file
+ * ([credentialsFile]) or base64-encoded in a sealed variable ([credentialsBase64]); never committed either way.
+ * The project comes from the key unless [projectId] overrides it.
  */
 @ConfigurationProperties("liftonway.push.fcm")
 data class FcmProperties(
     val credentialsFile: String = "",
+    val credentialsBase64: String = "",
     val projectId: String = "",
     val sendUrl: String = "https://fcm.googleapis.com",
     /** Notifications older than this aren't worth delivering (a request after the ride has gone, say). */
@@ -44,7 +45,12 @@ data class FcmProperties(
  */
 class FcmPushSender(private val props: FcmProperties, private val clock: Clock) : PushSender {
     private val log = LoggerFactory.getLogger(javaClass)
-    private val account: ServiceAccount = ServiceAccount.read(File(props.credentialsFile))
+    private val account: ServiceAccount = if (props.credentialsBase64.isNotBlank()) {
+        ServiceAccount.parse(Base64.getMimeDecoder().decode(props.credentialsBase64.trim()).decodeToString())
+    } else {
+        require(File(props.credentialsFile).isFile) { "liftonway.push.fcm.credentials-file doesn't point at a readable file" }
+        ServiceAccount.parse(File(props.credentialsFile).readText())
+    }
     private val project = props.projectId.ifBlank { account.projectId }
     private val http = RestClient.builder()
         .requestFactory(
@@ -121,9 +127,8 @@ class FcmPushSender(private val props: FcmProperties, private val clock: Clock) 
     /** The fields of a Google service account key file that this needs. */
     class ServiceAccount(val projectId: String, val clientEmail: String, val privateKeyId: String?, val privateKey: RSAPrivateKey, val tokenUri: String) {
         companion object {
-            fun read(file: File): ServiceAccount {
-                require(file.isFile) { "liftonway.push.fcm.credentials-file doesn't point at a readable file" }
-                val json = JsonMapper.builder().build().readTree(file)
+            fun parse(text: String): ServiceAccount {
+                val json = JsonMapper.builder().build().readTree(text)
                 val pem = json.path("private_key").asString()
                 val der = Base64.getMimeDecoder().decode(pem.replace(Regex("-----[A-Z ]+-----"), ""))
                 val key = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(der)) as RSAPrivateKey

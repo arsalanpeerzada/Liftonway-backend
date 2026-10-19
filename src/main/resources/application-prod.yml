@@ -1,6 +1,8 @@
 # Deployed servers (SPRING_PROFILES_ACTIVE=prod). Everything secret comes from the environment; see deploy/.env.example.
 
 server:
+  # Platforms such as Railway tell the app which port to listen on.
+  port: ${PORT:8080}
   # Behind a TLS-terminating proxy (Caddy, a load balancer or the platform's router): trust its X-Forwarded-*
   # headers, so client addresses (rate limits) and https links are right. Only expose the app through that proxy.
   forward-headers-strategy: native
@@ -38,3 +40,5 @@ liftonway:
     fcm:
       # Path to the Firebase service account key, mounted as a secret file. Push is off when empty.
       credentials-file: ${FIREBASE_CREDENTIALS_FILE:}
+      # Or the key itself, base64-encoded, for hosts without secret files (Railway: a sealed variable).
+      credentials-base64: ${FIREBASE_CREDENTIALS_BASE64:}

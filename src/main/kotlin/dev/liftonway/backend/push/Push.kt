@@ -48,7 +48,7 @@ class PushConfig {
      */
     @Bean
     fun pushSender(props: FcmProperties, clock: Clock): PushSender {
-        if (props.credentialsFile.isNotBlank()) return FcmPushSender(props, clock)
+        if (props.credentialsFile.isNotBlank() || props.credentialsBase64.isNotBlank()) return FcmPushSender(props, clock)
         LoggerFactory.getLogger(PushConfig::class.java).info("Push notifications are off: no Firebase credentials configured.")
         return PushSender { _, _ -> true }
     }
