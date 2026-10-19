@@ -1,7 +1,12 @@
 liftonway:
+  jwt:
+    ttl: 30d
   otp:
     # Test value only: no SMS is sent and every code is this.
     dev-code: "1234"
   # Tests drive the jobs' services directly with a controlled clock.
   jobs:
+    enabled: false
+  # Every test call comes from one address; RulesTest covers the limiter itself.
+  rate-limit:
     enabled: false

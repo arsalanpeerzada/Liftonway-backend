@@ -27,7 +27,30 @@ The API is then at `http://localhost:8080/api/v1`, with interactive docs at `htt
 ```
 
 - **Integration:** each run starts its own throwaway PostgreSQL, so no setup is needed. `ApiFlowTest` drives the whole journey over HTTP: publish, search including stops, request, accept, cancel either side of the 4-hour line, the driver's notifications, cancelling and completing rides (including the automatic completion), code rate limits and attempt caps.
-- **Unit:** `RulesTest` covers the cancellation rule and phone number handling.
+- **Sessions and errors:** token expiry, refresh rotation and reuse detection, sign-out, and 4xx (never 500) answers to malformed requests.
+- **Unit:** `RulesTest` covers the cancellation rule, phone number handling and the rate limiter. `TwilioSmsTest` checks the Twilio adapter against a local stand-in, so no real messages are sent.
+
+## Deploy
+
+The repository builds into a Docker image (`Dockerfile`) that runs with the `prod` profile and takes all configuration from environment variables. It runs anywhere that can run a container: a single server, Railway, Render, Fly.io, or a cloud provider's container service with its managed PostgreSQL.
+
+For a single Linux server, `deploy/` has a ready setup: PostgreSQL, the API, and Caddy in front, which gets and renews HTTPS certificates on its own.
+
+1. Point a domain (for example `api.yourdomain.com`) at the server.
+2. Copy the repository to the server, then `cp deploy/.env.example deploy/.env` and fill in every value. Never commit `.env`.
+3. `cd deploy && docker compose up -d --build`
+
+What you need first:
+- **Twilio:** an account, an API key (not the auth token), and a Messaging Service with a sender that can reach Pakistani numbers. Sending to Pakistan may need sender registration on Twilio's side; check their country guidelines before launch.
+- **A token secret:** at least 32 random bytes, for example from `openssl rand -base64 48`.
+- **Backups:** the compose setup keeps data in a Docker volume on that one server. Before real users, schedule `pg_dump` off the machine, or use a managed PostgreSQL with automatic backups instead (set `SPRING_DATASOURCE_*` and drop the `db` service).
+
+The app needs the API's HTTPS address at build time: `./gradlew assembleRelease -Pliftonway.releaseApiUrl=https://api.yourdomain.com/api/v1/`.
+
+In production:
+- Logs are one JSON object per line.
+- `/actuator/health/liveness` and `/readiness` serve health checks; Caddy keeps them, and the API docs, off the public internet.
+- The app trusts `X-Forwarded-*` headers, so only ever expose it through the proxy.
 
 ## API at a glance
 
@@ -35,6 +58,7 @@ The API is then at `http://localhost:8080/api/v1`, with interactive docs at `htt
 | --- | --- |
 | `POST /auth/otp` | Send a code to a number |
 | `POST /auth/verify` | Check the code; signs in, or signs up when a name is sent with a new number |
+| `POST /auth/refresh`, `POST /auth/logout` | Swap a refresh token for a new pair; end this device's session |
 | `GET, PATCH /me` | The signed-in account |
 | `POST /me/phone/otp`, `POST /me/phone/verify` | Change number |
 | `GET, PUT /me/vehicle` | The user's car (needed to publish) |
@@ -67,15 +91,24 @@ Errors use RFC 9457 problem responses with a stable `code`, such as `CANCEL_WIND
   - Allow 5 wrong attempts each.
   - Limited to one request per 30 seconds and five per hour for each number.
   - Never logged; logs show masked numbers only.
-- **Tokens:** HS256 JWTs, valid for 7 days. Outside `dev` and `test`, `LIFTONWAY_JWT_SECRET` must be set to at least 32 random bytes from a secret store, or the app refuses to start.
-- **SMS:** no provider is plugged in yet. Outside `dev` and `test` the app refuses to start until an `SmsSender` bean is added, so it can never silently skip sending codes.
+- **Access tokens:** HS256 JWTs that last 15 minutes. Outside `dev` and `test`, `LIFTONWAY_JWT_SECRET` must be set to at least 32 random bytes from a secret store, or the app refuses to start.
+- **Refresh tokens:**
+  - Last 60 days and are stored only as an HMAC.
+  - Can be used once: each refresh returns the next one.
+  - If a spent token comes back, that sign-in is ended on every copy.
+  - Sign-out ends the device's sign-in on the server.
+- **SMS:** Twilio, turned on by its environment variables. Outside `dev` and `test` the app refuses to start without an SMS sender, so it can never silently skip sending codes. Message text holds the code and is never logged.
+- **Rate limits:**
+  - 120 calls a minute per signed-in user, and 60 a minute per address when signed out.
+  - Code requests are capped at 10 an hour per address, on top of 5 an hour per number, which blocks SMS pumping (paid texts sent to numbers an attacker controls).
+  - Counters are kept per server, so with several servers the effective limit multiplies. Move them to Redis if that matters.
+- **Retention:** a nightly job removes notifications after 90 days, sign-in code records after 30 days, and expired sessions after a week.
 - **Database:** deployed builds use a managed PostgreSQL, set through `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD` from the environment. The embedded database is development-only and is left out of the built jar.
 
-Phone numbers and names are personal data. Before any real users, this needs a privacy notice, a retention policy for old code records, and a review against the applicable data protection law.
+Phone numbers and names are personal data. Before any real users, this needs a privacy notice and a review against the applicable data protection law by someone qualified.
 
 ## Not built yet
 
-- An SMS provider, and refresh tokens.
 - Photo upload for profiles and vehicles. The app keeps photos on the device for now.
 - Payments and the wallet. The app still uses in-memory data for these.
 - Push notifications. The app checks for new ones every 30 seconds while it's open.

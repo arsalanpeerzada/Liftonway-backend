@@ -53,6 +53,10 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+// One runnable jar with a fixed name, for the Docker image.
+tasks.jar { enabled = false }
+tasks.bootJar { archiveFileName.set("liftonway-backend.jar") }
+
 tasks.withType<Test> {
     useJUnitPlatform()
 }

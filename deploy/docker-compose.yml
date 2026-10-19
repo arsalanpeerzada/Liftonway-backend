@@ -1,0 +1,53 @@
+# One-server deployment: PostgreSQL, the API, and Caddy in front for automatic HTTPS (Let's Encrypt).
+# On the server: copy this folder, create .env from .env.example, point your domain's DNS at the server, then
+#   docker compose up -d --build
+# Only Caddy is reachable from outside (ports 80 and 443); the API and database stay on the private network.
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: liftonway
+      POSTGRES_USER: liftonway
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liftonway -d liftonway"]
+      interval: 10s
+      retries: 5
+
+  api:
+    build: ..
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/liftonway
+      SPRING_DATASOURCE_USERNAME: liftonway
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      LIFTONWAY_JWT_SECRET: ${LIFTONWAY_JWT_SECRET:?set LIFTONWAY_JWT_SECRET in .env}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?set the Twilio values in .env}
+      TWILIO_API_KEY_SID: ${TWILIO_API_KEY_SID}
+      TWILIO_API_KEY_SECRET: ${TWILIO_API_KEY_SECRET}
+      TWILIO_MESSAGING_SERVICE_SID: ${TWILIO_MESSAGING_SERVICE_SID:-}
+      TWILIO_FROM: ${TWILIO_FROM:-}
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  db-data:
+  caddy-data:

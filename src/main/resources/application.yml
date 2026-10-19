@@ -35,7 +35,9 @@ liftonway:
   jwt:
     # Required outside dev and test: a random value of at least 32 bytes, from a secret store. Never commit one.
     secret: ${LIFTONWAY_JWT_SECRET:}
-    ttl: 7d
+    # Access tokens are short-lived; refresh tokens rotate on every use and end the sign-in if reused.
+    ttl: 15m
+    refresh-ttl: 60d
   otp:
     length: 4
     ttl: 5m

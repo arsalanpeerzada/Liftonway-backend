@@ -28,7 +28,19 @@ data class CodeVerify(
     @field:Size(max = 60) val name: String? = null,
 )
 
-data class Session(val token: String, val expiresAt: Instant, val created: Boolean, val user: Me)
+data class Session(
+    val token: String,
+    val expiresAt: Instant,
+    val refreshToken: String,
+    val refreshExpiresAt: Instant,
+    val created: Boolean,
+    val user: Me,
+)
+
+data class RefreshBody(@field:NotBlank val refreshToken: String)
+
+/** A renewed pair. The old refresh token is spent and must not be used again. */
+data class Renewed(val token: String, val expiresAt: Instant, val refreshToken: String, val refreshExpiresAt: Instant)
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -36,6 +48,7 @@ class AuthController(
     private val otp: OtpService,
     private val users: UserRepository,
     private val tokens: Tokens,
+    private val refreshTokens: RefreshTokens,
     private val me: MeController,
 ) {
     @PostMapping("/otp")
@@ -55,6 +68,19 @@ class AuthController(
         otp.verify(phone, body.code, OtpPurpose.SIGN_IN)
         val user = existing ?: users.create(name!!, phone)
         val issued = tokens.issue(user.id)
-        return Session(issued.token, issued.expiresAt, created = existing == null, user = me.me(user.id))
+        val refresh = refreshTokens.start(user.id)
+        return Session(issued.token, issued.expiresAt, refresh.token, refresh.expiresAt, created = existing == null, user = me.me(user.id))
     }
+
+    @PostMapping("/refresh")
+    fun refresh(@Valid @RequestBody body: RefreshBody): Renewed {
+        val refresh = refreshTokens.rotate(body.refreshToken)
+        val issued = tokens.issue(refresh.userId)
+        return Renewed(issued.token, issued.expiresAt, refresh.token, refresh.expiresAt)
+    }
+
+    /** Ends this device's sign-in. Always succeeds, so the app can sign out offline and retry later. */
+    @PostMapping("/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun logout(@Valid @RequestBody body: RefreshBody) = refreshTokens.revoke(body.refreshToken)
 }

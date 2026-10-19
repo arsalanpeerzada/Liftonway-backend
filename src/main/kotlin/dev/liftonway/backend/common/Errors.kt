@@ -1,10 +1,13 @@
 package dev.liftonway.backend.common
 
 import org.slf4j.LoggerFactory
+import org.springframework.beans.TypeMismatchException
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
 import org.springframework.http.ResponseEntity
+import org.springframework.http.converter.HttpMessageNotReadableException
+import org.springframework.web.ErrorResponse
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
@@ -43,8 +46,25 @@ class ErrorHandler {
         return ResponseEntity.badRequest().body(body)
     }
 
+    /** Spring's own client errors: unknown path, wrong method, missing parameter and the like. Not our bug, so not logged as one. */
+    private fun framework(e: ErrorResponse): ResponseEntity<ProblemDetail> {
+        val status = HttpStatus.resolve(e.statusCode.value()) ?: HttpStatus.BAD_REQUEST
+        val (code, detail) = when (status) {
+            HttpStatus.NOT_FOUND -> "NOT_FOUND" to "Not found."
+            HttpStatus.METHOD_NOT_ALLOWED -> "METHOD_NOT_ALLOWED" to "That method isn't supported here."
+            else -> "BAD_REQUEST" to "That request isn't valid."
+        }
+        return ResponseEntity.status(status).body(problem(status, code, detail))
+    }
+
+    /** A malformed body or a parameter of the wrong type, e.g. a date that isn't one. */
+    @ExceptionHandler(HttpMessageNotReadableException::class, TypeMismatchException::class)
+    fun unreadable(e: Exception): ResponseEntity<ProblemDetail> =
+        ResponseEntity.badRequest().body(problem(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "That request isn't valid."))
+
     @ExceptionHandler(Exception::class)
     fun unexpected(e: Exception): ResponseEntity<ProblemDetail> {
+        if (e is ErrorResponse && e.statusCode.is4xxClientError) return framework(e)
         // Logged without request bodies: they can hold phone numbers and codes.
         log.error("Unhandled {}", e.javaClass.simpleName, e)
         return ResponseEntity.internalServerError().body(problem(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL", "Something went wrong."))

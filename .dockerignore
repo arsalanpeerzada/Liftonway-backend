@@ -1,0 +1,9 @@
+.git
+.gradle
+.kotlin
+.idea
+build
+out
+deploy
+*.env
+.env

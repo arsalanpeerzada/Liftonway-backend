@@ -250,6 +250,36 @@ class ApiFlowTest {
     }
 
     @Test
+    fun `access tokens expire, refresh tokens rotate, and a reused refresh token ends the sign-in`() {
+        val number = mapOf("countryCode" to "+92", "number" to "3001130001")
+        post("/auth/otp", number)
+        val session = post("/auth/verify", number + mapOf("code" to "1234", "name" to "Rotating Rider")).json
+        val first = session["refreshToken"] as String
+
+        // The test profile stretches access tokens to 30 days so other tests can move the clock freely.
+        clock.now = clock.now.plus(Duration.ofDays(31))
+        assertEquals(401, get("/me", session["token"] as String).status)
+
+        val renewed = post("/auth/refresh", mapOf("refreshToken" to first))
+        assertEquals(200, renewed.status, renewed.body.toString())
+        val second = renewed.json["refreshToken"] as String
+        assertEquals(200, get("/me", renewed.json["token"] as String).status)
+
+        // Someone replays the spent token: the attempt fails and the legitimate successor dies with it.
+        assertEquals("INVALID_REFRESH", post("/auth/refresh", mapOf("refreshToken" to first)).code)
+        assertEquals("INVALID_REFRESH", post("/auth/refresh", mapOf("refreshToken" to second)).code)
+        assertEquals("INVALID_REFRESH", post("/auth/refresh", mapOf("refreshToken" to "not-a-token")).code)
+
+        // Signing out ends that device's sign-in, and repeating it is harmless.
+        post("/auth/otp", number.plus("number" to "3001130002"))
+        val other = post("/auth/verify", mapOf("countryCode" to "+92", "number" to "3001130002", "code" to "1234", "name" to "Other")).json
+        val token = other["refreshToken"] as String
+        assertEquals(204, post("/auth/logout", mapOf("refreshToken" to token)).status)
+        assertEquals(204, post("/auth/logout", mapOf("refreshToken" to token)).status)
+        assertEquals("INVALID_REFRESH", post("/auth/refresh", mapOf("refreshToken" to token)).code)
+    }
+
+    @Test
     fun `codes are rate limited, attempts are capped, and new numbers need a name`() {
         val number = mapOf("countryCode" to "+92", "number" to "3001110009")
         assertEquals(202, post("/auth/otp", number).status)
@@ -267,5 +297,12 @@ class ApiFlowTest {
         assertEquals(401, get("/me").status)
         assertEquals(401, get("/rides?from=f7&to=saddar&date=2026-10-20").status)
         assertTrue(get("/places?q=saddar").list.any { it["id"] == "saddar" })
+
+        // Client mistakes are 4xx with a code, never a 500.
+        val token = signUp("Careless Client", "3001140001")
+        assertEquals("NOT_FOUND", get("/no-such-thing", token).code)
+        assertEquals("BAD_REQUEST", get("/rides?from=f7&to=saddar&date=someday", token).code)
+        assertEquals("BAD_REQUEST", get("/rides?to=saddar&date=2026-10-20", token).code)
+        assertEquals(405, call(HttpMethod.DELETE, "/rides", token = token).status)
     }
 }

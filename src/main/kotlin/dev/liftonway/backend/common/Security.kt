@@ -19,6 +19,7 @@ import org.springframework.security.oauth2.jwt.JwtEncoderParameters
 import org.springframework.security.oauth2.jwt.JwtTimestampValidator
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter
 import org.springframework.security.web.SecurityFilterChain
 import org.springframework.stereotype.Component
 import java.security.SecureRandom
@@ -58,16 +59,20 @@ class SecurityConfig(private val settings: LiftOnWayProperties, private val env:
     }
 
     @Bean
-    fun filterChain(http: HttpSecurity): SecurityFilterChain = http
+    fun filterChain(http: HttpSecurity, clock: Clock): SecurityFilterChain = http
         .csrf { it.disable() } // Bearer tokens only, no cookies, so CSRF doesn't apply.
         .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
         .authorizeHttpRequests {
             it.requestMatchers(HttpMethod.POST, "/api/v1/auth/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/v1/places", "/actuator/health").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/v1/places", "/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers("/docs/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .anyRequest().authenticated()
         }
         .oauth2ResourceServer { it.jwt { } }
+        .apply {
+            // After the token is read, so signed-in users are limited per account rather than per address.
+            if (settings.rateLimit.enabled) addFilterAfter(RateLimitFilter(clock, settings.rateLimit), BearerTokenAuthenticationFilter::class.java)
+        }
         .build()
 }
 

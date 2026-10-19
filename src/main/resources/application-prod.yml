@@ -1,0 +1,36 @@
+# Deployed servers (SPRING_PROFILES_ACTIVE=prod). Everything secret comes from the environment; see deploy/.env.example.
+
+server:
+  # Behind a TLS-terminating proxy (Caddy, a load balancer or the platform's router): trust its X-Forwarded-*
+  # headers, so client addresses (rate limits) and https links are right. Only expose the app through that proxy.
+  forward-headers-strategy: native
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+
+management:
+  endpoint:
+    health:
+      # /actuator/health/liveness and /readiness for the platform's checks.
+      probes:
+        enabled: true
+
+logging:
+  # One JSON object per line, ready for any log service.
+  structured:
+    format:
+      console: ecs
+
+liftonway:
+  sms:
+    twilio:
+      account-sid: ${TWILIO_ACCOUNT_SID:}
+      api-key-sid: ${TWILIO_API_KEY_SID:}
+      api-key-secret: ${TWILIO_API_KEY_SECRET:}
+      messaging-service-sid: ${TWILIO_MESSAGING_SERVICE_SID:}
+      from: ${TWILIO_FROM:}
